@@ -3,11 +3,8 @@ import os
 import signal
 import sys
 import subprocess
-import tempfile
 import threading
 from datetime import datetime
-from scipy.io.wavfile import write as write_audio
-import filters
 
 import ffmpeg
 import numpy as np
@@ -71,7 +68,7 @@ def main(url, **decode_options):
     min_audio_length = 3.0
     max_audio_length = 30.0
     vad_threshold = 0.5 
-    history_audio_buffer = RingBuffer( 1)
+    history_audio_buffer = RingBuffer(1)
     history_text_buffer = RingBuffer(0)
     n_bytes = round(frame_duration * SAMPLE_RATE *2) 
     #初始化流切片
@@ -83,7 +80,7 @@ def main(url, **decode_options):
                                  vad_threshold=vad_threshold,
                                  sampling_rate=SAMPLE_RATE)
     print("open stream")
-    ffmpeg_process, ytdlp_process = open_stream(url,False)
+    ffmpeg_process, ytdlp_process = open_stream(url)
 
     def handler(signum, frame):
         ffmpeg_process.kill()
@@ -98,41 +95,23 @@ def main(url, **decode_options):
         in_bytes = ffmpeg_process.stdout.read(n_bytes)
         if not in_bytes:
             break
-
+        #将int16类型的数据转为float32类型的数据，并进行标准化，将数据缩放至 [-1.0, 1.0] 之间
         audio = np.frombuffer(in_bytes, np.int16).flatten().astype(np.float32) / 32768.0
         stream_slicer.put(audio)
-
         if stream_slicer.should_slice():
             # Decode the audio
-            sliced_audio, time_range = stream_slicer.slice()
+            sliced_audio ,time_range= stream_slicer.slice()
             history_audio_buffer.append(sliced_audio)
             result = model.transcribe(np.concatenate(history_audio_buffer.get_all()),
                                           prefix="".join(history_text_buffer.get_all()),
-                                          language="ja",
+                                          language="Chinese",
                                           without_timestamps=True,
                                           **decode_options)
-
             decoded_text = result.get("text")
             print(decoded_text)
-print("Stream ended")
 
-
-def open_stream(stream,direct_url):
-    print(stream,direct_url)
-    if direct_url:
-        try:
-            process = (ffmpeg.input(
-                stream, loglevel="panic").output("pipe:",
-                                                 format="s16le",
-                                                 acodec="pcm_s16le",
-                                                 ac=1,
-                                                 ar=SAMPLE_RATE).run_async(pipe_stdout=True))
-        except ffmpeg.Error as e:
-            raise RuntimeError(f"Failed to load audio: {e.stderr.decode()}") from e
-
-        return process, None
-    
-    
+def open_stream(stream):
+    print(stream)
     def writer(ytdlp_proc, ffmpeg_proc):
         while (ytdlp_proc.poll() is None) and (ffmpeg_proc.poll() is None):
             try:
@@ -143,9 +122,8 @@ def open_stream(stream,direct_url):
         ytdlp_proc.kill()
         ffmpeg_proc.kill()
 
-
     cmd = ['yt-dlp', stream, '-f', "wa*", '-o', '-', '-q']
-    ytdlp_process = subprocess.Popen(cmd, stdout=subprocess.PIPE)
+    ytdlp_process = subprocess.Popen(cmd, stdout=subprocess.PIPE)   
 
     try:
         ffmpeg_process = (ffmpeg.input("pipe:", loglevel="panic").output("pipe:",
@@ -223,10 +201,12 @@ class StreamSlicer:
 
 
 def cli():
+    os.environ["http_proxy"] = "http://127.0.0.1:7890"
+    os.environ["https_proxy"] = "http://127.0.0.1:7890"
     parser = argparse.ArgumentParser(description="Parameters for translator.py")
     parser.add_argument('URL',
                         type=str,
-                        help='Stream website and channel name, e.g. twitch.tv/forsen')
+                        help='set the stream url')
    
 
     args = parser.parse_args().__dict__
